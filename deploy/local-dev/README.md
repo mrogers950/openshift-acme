@@ -1,5 +1,5 @@
 ```bash
-ssh -N -R 'localhost:45000:localhost:80' your.public.server.io
+ssh -N -R 'localhost:45001:localhost:443' -R 'localhost:45000:localhost:80' your.public.server.io
 ```
 
 ```bash

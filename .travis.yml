@@ -63,6 +63,7 @@ script:
     export DOMAIN
     DOMAIN=$((tail -n +0 -f ${logfile} || true) | grep --text -m 1 'Hostname' | sed -r 's/.*Hostname:([^] ]*).*/\1/')
     echo "domain: ${domain}"
+    export DELETE_ACCOUNT_BETWEEN_STEPS_IN_NAMESPACE=acme-aaa
     bash -x hack/run-extended-test-on-all-versions.sh /tmp/oc
   fi
 

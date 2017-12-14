@@ -32,8 +32,12 @@ test:
 	go test -i $(GOFLAGS) $(GO_PACKAGES)
 	go test $(GOFLAGS) $(GO_PACKAGES)
 
+.PHONY: test-extended-install
+test-extended-install:
+	go test -i $(GOFLAGS) ./test/e2e/openshift
+
 .PHONY: test-extended
-test-extended:
+test-extended: test-extended-install
 	export KUBECONFIG=$(GO_ET_KUBECONFIG) && \
 	export TEST_DOMAIN=$(GO_ET_DOMAIN) && \
 	go test $(GOFLAGS) ./test/e2e/openshift $(TEST_FLAGS)

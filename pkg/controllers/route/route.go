@@ -206,10 +206,21 @@ func (rc *RouteController) deleteRoute(obj interface{}) {
 
 // TODO: extract this function to be re-used by ingress controller
 // FIXME: needs expectation protection
-func (rc *RouteController) getState(t time.Time, route *routev1.Route) api.AcmeState {
+func (rc *RouteController) getState(t time.Time, route *routev1.Route, accountUrl string) api.AcmeState {
 	if route.Annotations != nil {
 		_, ok := route.Annotations[api.AcmeAwaitingAuthzUrlAnnotation]
 		if ok {
+			owner, ok := route.Annotations[api.AcmeAwaitingAuthzUrlOwnerAnnotation]
+			if !ok {
+				glog.Warning("Missing Route with %q annotation is missing %q annotation!", api.AcmeAwaitingAuthzUrlAnnotation, api.AcmeAwaitingAuthzUrlOwnerAnnotation)
+				return api.AcmeStateNeedsCert
+			}
+
+			if owner != accountUrl {
+				glog.Warning("%s mismatch: authorization owner is %q but current account is %q. This is likely because the acme-account was recreated in the meantime.", api.AcmeAwaitingAuthzUrlOwnerAnnotation, owner, accountUrl)
+				return api.AcmeStateNeedsCert
+			}
+
 			return api.AcmeStateWaitingForAuthz
 		}
 	}
@@ -324,20 +335,18 @@ func (rc *RouteController) handle(key string) error {
 		return nil
 	}
 
-	state := rc.getState(startTime, routeReadOnly)
+	ctx, cancel := context.WithTimeout(context.Background(), AcmeTimeout)
+	defer cancel()
+	client, err := rc.acmeClientFactory.GetClient(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get ACME client: %v", err)
+	}
+	state := rc.getState(startTime, routeReadOnly, client.Account.URI)
 	// FIXME: this state machine needs protection with expectations
 	// (informers may not be synced yet with recent state transition updates)
 	switch state {
 	case api.AcmeStateNeedsCert:
 		// TODO: Add TTL based lock to allow only one domain to enter this stage
-
-		ctx, cancel := context.WithTimeout(context.Background(), AcmeTimeout)
-		defer cancel()
-
-		client, err := rc.acmeClientFactory.GetClient(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get ACME client: %v", err)
-		}
 
 		// FIXME: definitely protect with expectations
 		authorization, err := client.Client.Authorize(ctx, routeReadOnly.Spec.Host)
@@ -355,6 +364,7 @@ func (rc *RouteController) handle(key string) error {
 			route.Annotations = make(map[string]string)
 		}
 		route.Annotations[api.AcmeAwaitingAuthzUrlAnnotation] = authorization.URI
+		route.Annotations[api.AcmeAwaitingAuthzUrlOwnerAnnotation] = client.Account.URI
 		// TODO: convert to PATCH to avoid loosing time and rate limits on update collisions
 		_, err = rc.routeClientset.RouteV1().Routes(route.Namespace).Update(route)
 		if err != nil {

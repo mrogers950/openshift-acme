@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"strings"
+	"time"
 
 	g "github.com/onsi/ginkgo"
 	o "github.com/onsi/gomega"
@@ -213,6 +214,9 @@ func (f *Framework) AfterEach() {
 			Failf(strings.Join(messages, ","))
 		}
 	}()
+
+	// Wait a bit so controller have a chance at sending events before deleting the namespace
+	time.Sleep(1 * time.Second)
 
 	// Print events if the test failed.
 	if g.CurrentGinkgoTestDescription().Failed {

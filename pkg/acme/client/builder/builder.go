@@ -28,7 +28,7 @@ const (
 	LabelAcmeAccountType           = "account"
 )
 
-func BuildClientFromSecret(secret *corev1.Secret, acmeUrl string) (*acmeclient.Client, error) {
+func BuildClientFromSecret(secret *corev1.Secret) (*acmeclient.Client, error) {
 	if secret.Data == nil {
 		return nil, errors.New("malformed acme account: missing Data")
 	}
@@ -42,6 +42,12 @@ func BuildClientFromSecret(secret *corev1.Secret, acmeUrl string) (*acmeclient.C
 		return nil, fmt.Errorf("malformed acme account: missing Data.'%s'", DataAcmeAccountUrlKey)
 	}
 	url := string(urlBytes)
+
+	directoryUrlBytes, ok := secret.Data[DataAcmeAccountDirectoryUrlKey]
+	if !ok {
+		return nil, fmt.Errorf("malformed acme account: missing Data.'%s'", DataAcmeAccountDirectoryUrlKey)
+	}
+	directoryUrl := string(directoryUrlBytes)
 
 	block, _ := pem.Decode(keyPem)
 	if block == nil {
@@ -58,7 +64,7 @@ func BuildClientFromSecret(secret *corev1.Secret, acmeUrl string) (*acmeclient.C
 		},
 		Client: &acmelib.Client{
 			Key:          key,
-			DirectoryURL: acmeUrl,
+			DirectoryURL: directoryUrl,
 		},
 	}, nil
 }
@@ -164,5 +170,5 @@ func (f *SharedClientFactory) GetClient(ctx context.Context) (*acmeclient.Client
 		// Someone created new account just in the interim but that's ok
 	}
 
-	return BuildClientFromSecret(secret, f.acmeUrl)
+	return BuildClientFromSecret(secret)
 }

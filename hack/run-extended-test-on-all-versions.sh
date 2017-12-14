@@ -23,7 +23,7 @@ echo binaries: ${binaries}
 
 [[ ! -z "${binaries}" ]]
 
-make -j64 test-extended GOFLAGS='-i -v -race' TEST_FLAGS=''
+make -j64 test-extended-install GOFLAGS='-v -race'
 
 function setupClusterWide() {
     oc create -fdeploy/letsencrypt-staging/cluster-wide/{clusterrole,serviceaccount,deployment}.yaml
@@ -57,10 +57,11 @@ for binary in ${binaries}; do
     version=${binary#$prefix}
     echo binary version: ${version}
     ln -sfn ${binary} ${bindir}/oc
-    oc version
+    oc version || true
     for setup in {setupClusterWide,setupSingleNamespace}; do
         echo ${setup}
         oc cluster up --version=${version} --server-loglevel=4
+        oc version
         oc login -u system:admin
 
         oc get all -n default
@@ -87,9 +88,11 @@ for binary in ${binaries}; do
         docker tag openshift-acme-candidate ${is_image}
         docker push ${is_image}
 
-        oc get is openshift-acme
+        oc get is openshift-acme -o yaml
 
         ${setup}
+        # clean up and let it start again
+        timeout 1m oc delete rs -l app=openshift-acme --grace-period=0
 
         oc get all
         oc rollout status deploy/openshift-acme

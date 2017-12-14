@@ -22,6 +22,10 @@ func Domain() string {
 	return os.Getenv("TEST_DOMAIN")
 }
 
+func DeleteAccountBetweenStepsInNamespace() string {
+	return os.Getenv("DELETE_ACCOUNT_BETWEEN_STEPS_IN_NAMESPACE")
+}
+
 func InitTest() {
 	TestContext.KubeConfigPath = KubeConfigPath()
 	framework.Logf("KubeConfigPath: %q", TestContext.KubeConfigPath)
@@ -59,6 +63,8 @@ func InitTest() {
 		framework.Failf("You have to specify TEST_DOMAIN!")
 	}
 	framework.Logf("TEST_DOMAIN is %q", domain)
+
+	framework.Logf("DeleteAccountBetweenStepsInNamespace: %s", DeleteAccountBetweenStepsInNamespace())
 }
 
 func ExecuteTest(t *testing.T, suite string) {

@@ -1,11 +1,19 @@
 package util
 
 import (
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 
+	routev1 "github.com/openshift/api/route/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
 
 	"github.com/tnozicka/openshift-acme/pkg/api"
+	routeutil "github.com/tnozicka/openshift-acme/pkg/route"
 )
 
 func IsManaged(obj metav1.Object) bool {
@@ -15,6 +23,51 @@ func IsManaged(obj metav1.Object) bool {
 	}
 
 	return annotation == "true"
+}
+
+func CertificateFromPEM(crt []byte) (*x509.Certificate, error) {
+	block, _ := pem.Decode(crt)
+	if block == nil {
+		return nil, errors.New("no data found in Crt")
+	}
+
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return certificate, nil
+}
+
+func RouteAdmittedFunc() func(watch.Event) (bool, error) {
+	return func(event watch.Event) (bool, error) {
+		switch event.Type {
+		case watch.Modified:
+			r := event.Object.(*routev1.Route)
+			if routeutil.IsAdmitted(r) {
+				return true, nil
+			}
+			return false, nil
+		default:
+			return false, fmt.Errorf("unexpected event - type: %s, obj: %#v", event.Type, event.Object)
+		}
+	}
+}
+
+func RouteTLSChangedFunc(tls *routev1.TLSConfig) func(watch.Event) (bool, error) {
+	return func(event watch.Event) (bool, error) {
+		switch event.Type {
+		case watch.Modified:
+			r := event.Object.(*routev1.Route)
+			if !reflect.DeepEqual(r.Spec.TLS, tls) {
+				return true, nil
+			}
+
+			return false, nil
+		default:
+			return false, fmt.Errorf("unexpected event - type: %s, obj: %#v", event.Type, event.Object)
+		}
+	}
 }
 
 func FirstNLines(s string, n int) string {

@@ -1,6 +1,7 @@
 package route
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -195,6 +196,10 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 			},
 		},
 	}
+	// TODO: Remove after https://github.com/openshift/origin/issues/14950 is fixed in all supported OpenShift versions
+	if e.route.Spec.TLS != nil {
+		route.Spec.TLS.InsecureEdgeTerminationPolicy = e.route.Spec.TLS.InsecureEdgeTerminationPolicy
+	}
 
 	createdRoute, err := e.routeClientset.RouteV1().Routes(e.route.Namespace).Create(route)
 	if err != nil {
@@ -254,6 +259,7 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 	if err != nil {
 		return fmt.Errorf("failed to compute key: %v", err)
 	}
+	// FIXME: this can DOS the workers and needs to become asynchronous using the queue
 	err = wait.ExponentialBackoff(
 		wait.Backoff{
 			Duration: 1 * time.Second,
@@ -262,7 +268,15 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 			Steps:    22,
 		},
 		func() (bool, error) {
-			response, err := http.Get(url)
+			tr := &http.Transport{
+				TLSClientConfig: &tls.Config{
+					// TODO: Remove after https://github.com/openshift/origin/issues/14950 is fixed in all supported OpenShift versions
+					InsecureSkipVerify: true,
+				},
+			}
+			client := &http.Client{Transport: tr}
+
+			response, err := client.Get(url)
 			if err != nil {
 				glog.Errorf("Failed to GET %q: %v", url, err)
 				return false, nil
@@ -280,7 +294,7 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 			body := string(buffer[:n])
 
 			if response.StatusCode != http.StatusOK {
-				glog.V(3).Info("Failed to GET %q: %s: %s", url, response.Status, util.FirstNLines(util.MaxNCharacters(body, 160), 5))
+				glog.V(3).Infof("Failed to GET %q: %s: %s", url, response.Status, util.FirstNLines(util.MaxNCharacters(body, 160), 5))
 				return false, nil
 			}
 
@@ -295,7 +309,7 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 	if err != nil {
 		e.recorder.Event(e.route, "Controller failed to verify that exposing Route is accessible. It will continue with ACME validation but chances are that either exposing failed or your domain can't be reached from inside the cluster.", corev1.EventTypeWarning, "ExposingRouteNotVerified")
 	} else {
-		glog.V(4).Infof("Exposing Route %s/%s is accessible and contains correct response.")
+		glog.V(4).Infof("Exposing Route %s/%s is accessible and contains correct response.", createdRoute.Namespace, createdRoute.Name)
 	}
 
 	return nil
