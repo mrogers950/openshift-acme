@@ -64,7 +64,7 @@ func InitTest() {
 	}
 	framework.Logf("TEST_DOMAIN is %q", domain)
 
-	framework.Logf("DeleteAccountBetweenStepsInNamespace: %s", DeleteAccountBetweenStepsInNamespace())
+	framework.Logf("DeleteAccountBetweenStepsInNamespace: %q", DeleteAccountBetweenStepsInNamespace())
 }
 
 func ExecuteTest(t *testing.T, suite string) {

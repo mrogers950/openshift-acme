@@ -17,8 +17,9 @@ else
    bindir=${wd}/${1:-.}
 fi
 PATH=${bindir}:${PATH}
-prefix=${bindir}/oc-
-binaries=$(echo ${prefix}*)
+prefix=oc-
+pathPrefix=${bindir}/${prefix}
+binaries=$(find ${bindir} -type f -executable -name "${prefix}*")
 echo binaries: ${binaries}
 
 [[ ! -z "${binaries}" ]]
@@ -54,7 +55,7 @@ trap failureTrap ERR
 trap "sleep 3" EXIT
 
 for binary in ${binaries}; do
-    version=${binary#$prefix}
+    version=${binary#$pathPrefix}
     echo binary version: ${version}
     ln -sfn ${binary} ${bindir}/oc
     oc version || true
@@ -91,8 +92,9 @@ for binary in ${binaries}; do
         oc get is openshift-acme -o yaml
 
         ${setup}
+        oc set env -e OPENSHIFT_ACME_DEFAULT_ROUTE_TERMINATION=Allow deploy/openshift-acme
         # clean up and let it start again
-        timeout 1m oc delete rs -l app=openshift-acme --grace-period=0
+        timeout 1m oc delete rs -l app=openshift-acme --grace-period=0 --force
 
         oc get all
         oc rollout status deploy/openshift-acme

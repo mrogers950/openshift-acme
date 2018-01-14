@@ -270,7 +270,6 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 		func() (bool, error) {
 			tr := &http.Transport{
 				TLSClientConfig: &tls.Config{
-					// TODO: Remove after https://github.com/openshift/origin/issues/14950 is fixed in all supported OpenShift versions
 					InsecureSkipVerify: true,
 				},
 			}
@@ -278,7 +277,7 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 
 			response, err := client.Get(url)
 			if err != nil {
-				glog.Errorf("Failed to GET %q: %v", url, err)
+				glog.Warningf("Failed to GET %q: %v", url, err)
 				return false, nil
 			}
 
@@ -288,7 +287,7 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 			buffer := make([]byte, 2048)
 			n, err := response.Body.Read(buffer)
 			if err != nil && err != io.EOF {
-				glog.Errorf("Failed to read response body into buffer: %v", err)
+				glog.Warningf("Failed to read response body into buffer: %v", err)
 				return false, nil
 			}
 			body := string(buffer[:n])

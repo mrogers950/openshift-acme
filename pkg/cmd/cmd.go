@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/golang/glog"
+	routev1 "github.com/openshift/api/route/v1"
 	routeclientset "github.com/openshift/client-go/route/clientset/versioned"
 	routescheme "github.com/openshift/client-go/route/clientset/versioned/scheme"
 	routeinformersv1 "github.com/openshift/client-go/route/informers/externalversions/route/v1"
@@ -33,18 +34,19 @@ import (
 )
 
 const (
-	DefaultLoglevel        = 2
-	Flag_LogLevel_Key      = "loglevel"
-	Flag_Kubeconfig_Key    = "kubeconfig"
-	Flag_Acmeurl_Key       = "acmeurl"
-	Flag_SelfNamespace_Key = "selfnamespace"
-	Flag_ExposerIP         = "exposer-ip"
-	Flag_ExposerPort       = "exposer-port"
-	Flag_ExposerListenIP   = "exposer-listen-ip"
-	Flag_Namespace_Key     = "namespace"
-	Flag_AccountName_Key   = "account-name"
-	ResyncPeriod           = 10 * time.Minute
-	Workers                = 10
+	DefaultLoglevel                  = 4
+	Flag_LogLevel_Key                = "loglevel"
+	Flag_Kubeconfig_Key              = "kubeconfig"
+	Flag_Acmeurl_Key                 = "acmeurl"
+	Flag_SelfNamespace_Key           = "selfnamespace"
+	Flag_ExposerIP                   = "exposer-ip"
+	Flag_ExposerPort                 = "exposer-port"
+	Flag_ExposerListenIP             = "exposer-listen-ip"
+	Flag_Namespace_Key               = "namespace"
+	Flag_AccountName_Key             = "account-name"
+	Flag_DefaultRouteTermination_Key = "default-route-termination"
+	ResyncPeriod                     = 10 * time.Minute
+	Workers                          = 10
 )
 
 func NewOpenShiftAcmeCommand(in io.Reader, out, err io.Writer) *cobra.Command {
@@ -68,16 +70,8 @@ func NewOpenShiftAcmeCommand(in io.Reader, out, err io.Writer) *cobra.Command {
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// We have to bind Viper in Run because there is only one instance to avoid collisions
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_Kubeconfig_Key)
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_Acmeurl_Key)
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_SelfNamespace_Key)
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_ExposerIP)
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_ExposerPort)
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_ExposerListenIP)
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_Namespace_Key)
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_AccountName_Key)
+			v.BindPFlags(cmd.PersistentFlags())
 
-			cmdutil.BindViper(v, cmd.PersistentFlags(), Flag_LogLevel_Key)
 			if v.IsSet(Flag_LogLevel_Key) {
 				// The flag itself needs to be set for glog to recognize it.
 				// Makes sure loglevel can be set by environment variable as well.
@@ -98,6 +92,7 @@ func NewOpenShiftAcmeCommand(in io.Reader, out, err io.Writer) *cobra.Command {
 	rootCmd.PersistentFlags().Int32P(Flag_ExposerPort, "", 5000, "Port for http-01 server")
 	rootCmd.PersistentFlags().StringP(Flag_ExposerListenIP, "", "0.0.0.0", "Listen address for http-01 server")
 	rootCmd.PersistentFlags().StringP(Flag_SelfNamespace_Key, "", "", "Namespace where this controller and associated objects are deployed to. Defaults to current namespace if this program is running inside of the cluster.")
+	rootCmd.PersistentFlags().StringP(Flag_DefaultRouteTermination_Key, "", string(routev1.InsecureEdgeTerminationPolicyRedirect), "Default TLS termination of the route.")
 
 	from := flag.CommandLine
 	if flag := from.Lookup("v"); flag != nil {
@@ -228,6 +223,15 @@ func RunServer(v *viper.Viper, cmd *cobra.Command, out io.Writer) error {
 		}
 	}
 
+	defaultRouteTermination := routev1.InsecureEdgeTerminationPolicyType(v.GetString(Flag_DefaultRouteTermination_Key))
+	switch defaultRouteTermination {
+	case routev1.InsecureEdgeTerminationPolicyRedirect,
+		routev1.InsecureEdgeTerminationPolicyAllow,
+		routev1.InsecureEdgeTerminationPolicyNone:
+	default:
+		return fmt.Errorf("flag %q has invalid value: %q", Flag_DefaultRouteTermination_Key, defaultRouteTermination)
+	}
+
 	routeInformer := routeinformersv1.NewRouteInformer(routeClientset, namespace, ResyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 	glog.Infof("Starting Route informer")
 	go routeInformer.Run(stopCh)
@@ -254,7 +258,7 @@ func RunServer(v *viper.Viper, cmd *cobra.Command, out io.Writer) error {
 	secretLister := kcorelistersv1.NewSecretLister(secretInformer.GetIndexer())
 	acmeClientFactory := acmeclientbuilder.NewSharedClientFactory(acmeUrl, accountName, selfNamespace, kubeClientset, secretLister)
 
-	rc := routecontroller.NewRouteController(acmeClientFactory, exposers, routeClientset, kubeClientset, routeInformer, secretInformer, exposerIP, int32(exposerPort))
+	rc := routecontroller.NewRouteController(acmeClientFactory, exposers, routeClientset, kubeClientset, routeInformer, secretInformer, exposerIP, int32(exposerPort), defaultRouteTermination)
 	go rc.Run(Workers, stopCh)
 
 	<-stopCh

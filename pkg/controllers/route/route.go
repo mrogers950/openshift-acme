@@ -80,6 +80,8 @@ type RouteController struct {
 
 	exposerIP   string
 	exposerPort int32
+
+	defaultRouteTermination routev1.InsecureEdgeTerminationPolicyType
 }
 
 func NewRouteController(
@@ -91,6 +93,7 @@ func NewRouteController(
 	secretInformer cache.SharedIndexInformer,
 	exposerIP string,
 	exposerPort int32,
+	defaultRouteTermination routev1.InsecureEdgeTerminationPolicyType,
 ) *RouteController {
 
 	eventBroadcaster := record.NewBroadcaster()
@@ -122,6 +125,8 @@ func NewRouteController(
 
 		exposerIP:   exposerIP,
 		exposerPort: exposerPort,
+
+		defaultRouteTermination: defaultRouteTermination,
 	}
 
 	routeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
@@ -462,7 +467,7 @@ func (rc *RouteController) handle(key string) error {
 			if route.Spec.TLS == nil {
 				route.Spec.TLS = &routev1.TLSConfig{
 					// Defaults
-					InsecureEdgeTerminationPolicy: "Redirect",
+					InsecureEdgeTerminationPolicy: rc.defaultRouteTermination,
 					Termination:                   routev1.TLSTerminationEdge,
 				}
 			}
