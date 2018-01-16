@@ -40,7 +40,7 @@ test-extended-install:
 test-extended: test-extended-install
 	export KUBECONFIG=$(GO_ET_KUBECONFIG) && \
 	export TEST_DOMAIN=$(GO_ET_DOMAIN) && \
-	go test $(GOFLAGS) ./test/e2e/openshift $(TEST_FLAGS)
+	go test $(GOFLAGS) ./test/e2e/openshift -args $(TEST_FLAGS)
 
 .PHONY: checks
 checks: check-gofmt check-goimports check-govet check-deploy-files

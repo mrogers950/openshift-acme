@@ -10,7 +10,9 @@ import (
 	o "github.com/onsi/gomega"
 
 	"k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/storage/names"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -118,6 +120,9 @@ func (f *Framework) ChangeUser(username string, namespace string) {
 		return
 	}
 
+	// We need to reset the user
+	f.clientConfig = nil
+
 	user, err := f.UserClientset().UserV1().Users().Create(&userv1.User{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: username,
@@ -196,9 +201,32 @@ func (f *Framework) AfterEach() {
 		for _, ns := range f.namespacesToDelete {
 			g.By(fmt.Sprintf("Destroying namespace %q.", ns.Name))
 			var gracePeriod int64 = 0
-			err := f.KubeAdminClientSet().CoreV1().Namespaces().Delete(ns.Name, &metav1.DeleteOptions{GracePeriodSeconds: &gracePeriod})
+			var propagation metav1.DeletionPropagation = metav1.DeletePropagationForeground
+			err := f.KubeAdminClientSet().CoreV1().Namespaces().Delete(ns.Name, &metav1.DeleteOptions{
+				GracePeriodSeconds: &gracePeriod,
+				PropagationPolicy:  &propagation,
+			})
 			if err != nil {
 				nsDeletionErrors[ns.Name] = err
+				continue
+			}
+
+			// We have deleted only the object but they are still there with deletionTimestamp set
+
+			g.By(fmt.Sprintf("Waiting for namespace %q to be removed.", ns.Name))
+			err = wait.PollImmediate(1*time.Second, 5*time.Minute, func() (bool, error) {
+				_, err := f.KubeAdminClientSet().CoreV1().Namespaces().Get(ns.Name, metav1.GetOptions{})
+				if err != nil {
+					if apierrors.IsNotFound(err) {
+						return true, nil
+					}
+					return false, nil
+				}
+				return false, nil
+			})
+			if err != nil {
+				nsDeletionErrors[ns.Name] = fmt.Errorf("failed to wait for namespace %q to be removed: %v", ns.Namespace, err)
+				continue
 			}
 		}
 
