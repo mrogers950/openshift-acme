@@ -19,7 +19,7 @@ fi
 PATH=${bindir}:${PATH}
 prefix=oc-
 pathPrefix=${bindir}/${prefix}
-binaries=$(find ${bindir} -type f -executable -name "${prefix}*")
+binaries=$(find ${bindir} -type f -executable -name "${prefix}*" -printf "%T+\t%p\n" | sort | cut -d$'\t' -f2)
 echo binaries: ${binaries}
 
 [[ ! -z "${binaries}" ]]

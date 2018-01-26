@@ -4,15 +4,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"strings"
-	"time"
 
 	g "github.com/onsi/ginkgo"
 	o "github.com/onsi/gomega"
 
 	"k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/storage/names"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -183,6 +181,20 @@ func (f *Framework) ChangeUser(username string, namespace string) {
 	Logf("ConfigPath is now %q", tmpFile.Name())
 }
 
+func (f *Framework) DeleteNamespace(ns *v1.Namespace) error {
+	deleteTestingNS := TestContext.DeleteTestingNS
+	if deleteTestingNS == nil {
+		deleteTestingNS = DeleteNamespace
+	}
+
+	err := deleteTestingNS(f, ns)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (f *Framework) BeforeEach() {
 	g.By("Building a namespace api object")
 	_, err := f.CreateNamespace(f.name, nil)
@@ -199,33 +211,9 @@ func (f *Framework) AfterEach() {
 		}
 
 		for _, ns := range f.namespacesToDelete {
-			g.By(fmt.Sprintf("Destroying namespace %q.", ns.Name))
-			var gracePeriod int64 = 0
-			var propagation metav1.DeletionPropagation = metav1.DeletePropagationForeground
-			err := f.KubeAdminClientSet().CoreV1().Namespaces().Delete(ns.Name, &metav1.DeleteOptions{
-				GracePeriodSeconds: &gracePeriod,
-				PropagationPolicy:  &propagation,
-			})
+			err := f.DeleteNamespace(ns)
 			if err != nil {
 				nsDeletionErrors[ns.Name] = err
-				continue
-			}
-
-			// We have deleted only the object but they are still there with deletionTimestamp set
-
-			g.By(fmt.Sprintf("Waiting for namespace %q to be removed.", ns.Name))
-			err = wait.PollImmediate(1*time.Second, 5*time.Minute, func() (bool, error) {
-				_, err := f.KubeAdminClientSet().CoreV1().Namespaces().Get(ns.Name, metav1.GetOptions{})
-				if err != nil {
-					if apierrors.IsNotFound(err) {
-						return true, nil
-					}
-					return false, nil
-				}
-				return false, nil
-			})
-			if err != nil {
-				nsDeletionErrors[ns.Name] = fmt.Errorf("failed to wait for namespace %q to be removed: %v", ns.Namespace, err)
 				continue
 			}
 		}
@@ -242,9 +230,6 @@ func (f *Framework) AfterEach() {
 			Failf(strings.Join(messages, ","))
 		}
 	}()
-
-	// Wait a bit so controller have a chance at sending events before deleting the namespace
-	time.Sleep(1 * time.Second)
 
 	// Print events if the test failed.
 	if g.CurrentGinkgoTestDescription().Failed {

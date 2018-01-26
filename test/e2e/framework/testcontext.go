@@ -15,9 +15,11 @@ var (
 )
 
 type CreateTestingNSFn func(f *Framework, name string, labels map[string]string) (*v1.Namespace, error)
+type DeleteTestingNSFn func(f *Framework, ns *v1.Namespace) error
 
 type TestContextType struct {
 	KubeConfigPath        string
 	CreateTestingNS       CreateTestingNSFn
+	DeleteTestingNS       DeleteTestingNSFn
 	DeleteTestingNSPolicy DeleteTestingNSPolicyType
 }

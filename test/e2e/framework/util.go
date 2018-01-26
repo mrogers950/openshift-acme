@@ -9,6 +9,7 @@ import (
 	o "github.com/onsi/gomega"
 
 	"k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -104,6 +105,38 @@ func CreateTestingProjectAndChangeUser(f *Framework, name string, labels map[str
 	}
 
 	return namespace, nil
+}
+
+func DeleteNamespace(f *Framework, ns *v1.Namespace) error {
+	g.By(fmt.Sprintf("Destroying namespace %q.", ns.Name))
+	var gracePeriod int64 = 0
+	var propagation = metav1.DeletePropagationForeground
+	err := f.KubeAdminClientSet().CoreV1().Namespaces().Delete(ns.Name, &metav1.DeleteOptions{
+		GracePeriodSeconds: &gracePeriod,
+		PropagationPolicy:  &propagation,
+	})
+	if err != nil {
+		return err
+	}
+
+	// We have deleted only the namespace object but it is still there with deletionTimestamp set
+
+	g.By(fmt.Sprintf("Waiting for namespace %q to be removed.", ns.Name))
+	err = wait.PollImmediate(1*time.Second, 5*time.Minute, func() (bool, error) {
+		_, err := f.KubeAdminClientSet().CoreV1().Namespaces().Get(ns.Name, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to wait for namespace %q to be removed: %v", ns.Namespace, err)
+	}
+
+	return nil
 }
 
 func DumpEventsInNamespace(c kubernetes.Interface, namespace string) {

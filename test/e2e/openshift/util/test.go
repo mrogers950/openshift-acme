@@ -8,6 +8,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/tnozicka/openshift-acme/test/e2e/framework"
 )
@@ -46,13 +47,28 @@ func InitTest() {
 
 	fixedNamespace := os.Getenv("FIXED_NAMESPACE")
 	if fixedNamespace != "" {
-		TestContext.DeleteTestingNSPolicy = framework.DeleteTestingNSPolicyNever
 		TestContext.CreateTestingNS = func(f *framework.Framework, name string, labels map[string]string) (*corev1.Namespace, error) {
 			return &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: fixedNamespace,
 				},
 			}, nil
+		}
+		TestContext.DeleteTestingNS = func(f *framework.Framework, ns *corev1.Namespace) error {
+			var gracePeriod int64 = 0
+			var propagation = metav1.DeletePropagationForeground
+			err := f.RouteClientset().RouteV1().Routes(ns.Name).DeleteCollection(
+				&metav1.DeleteOptions{
+					GracePeriodSeconds: &gracePeriod,
+					PropagationPolicy:  &propagation,
+				}, metav1.ListOptions{
+					LabelSelector: labels.Everything().String(),
+				})
+			if err != nil {
+				return err
+			}
+
+			return nil
 		}
 	} else {
 		TestContext.CreateTestingNS = framework.CreateTestingProjectAndChangeUser
