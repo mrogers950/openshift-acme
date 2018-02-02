@@ -9,7 +9,6 @@ rules:
   - "route.openshift.io"
   resources:
   - routes
-  - routes/finalizers
   verbs:
   - create
   - get
@@ -25,21 +24,10 @@ rules:
   - routes/custom-host
   verbs:
   - create
-  - update
-  - delete
-  - patch
 
 - apiGroups:
   - ""
   resources:
-  - events
-  verbs:
-  - create
-
-- apiGroups:
-  - ""
-  resources:
-  - endpoints
   - services
   verbs:
   - create
@@ -54,7 +42,6 @@ rules:
   - ""
   resources:
   - secrets
-  - secrets/finalizers
   verbs:
   - create
   - get

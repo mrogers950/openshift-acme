@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -26,8 +27,19 @@ import (
 )
 
 const (
-	RouterAdmitTimeout = 30 * time.Second
+	RouterAdmitTimeout  = 30 * time.Second
+	GeneratedAnnotation = "acme.openshift.io/generated"
 )
+
+// TODO: move to a package
+func GetControllerRef(o *metav1.ObjectMeta) *metav1.OwnerReference {
+	for _, ref := range o.OwnerReferences {
+		if ref.Controller != nil && *ref.Controller {
+			return &ref
+		}
+	}
+	return nil
+}
 
 type Exposer struct {
 	underlyingExposer challengeexposers.Interface
@@ -36,6 +48,8 @@ type Exposer struct {
 	recorder          record.EventRecorder
 	exposerIP         string
 	exposerPort       int32
+	selfNamespace     string
+	selfSelector      map[string]string
 	route             *routev1.Route
 }
 
@@ -47,6 +61,8 @@ func NewExposer(underlyingExposer challengeexposers.Interface,
 	recorder record.EventRecorder,
 	exposerIP string,
 	exposerPort int32,
+	selfNamespace string,
+	selfSelector map[string]string,
 	route *routev1.Route,
 ) *Exposer {
 	return &Exposer{
@@ -56,6 +72,8 @@ func NewExposer(underlyingExposer challengeexposers.Interface,
 		recorder:          recorder,
 		exposerIP:         exposerIP,
 		exposerPort:       exposerPort,
+		selfNamespace:     selfNamespace,
+		selfSelector:      selfSelector,
 		route:             route,
 	}
 }
@@ -72,7 +90,7 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 	// Route can only point to a Service in the same namespace
 	// but we need to redirect ACME challenge to this controller
 	// usually deployed in a different namespace.
-	// We avoid this limitation by creating a forwarding service and manual endpoints.
+	// We avoid this limitation by creating a forwarding service and manual endpoints if needed.
 
 	/*
 	   Service
@@ -96,6 +114,28 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 			ClusterIP: "None",
 		},
 	}
+
+	// We need to avoid requiring "endpoints/restricted" for regular user in single-namespace use case.
+	glog.Infof("route namespace: %q", e.route.Namespace)
+	glog.Infof("self namespace: %q", e.selfNamespace)
+	glog.Infof("self selector: %q", e.selfSelector)
+	unprivilegedSameNamespace := e.route.Namespace == e.selfNamespace && e.selfSelector != nil
+
+	// If we are in the same namespace as the controller, and self selector is set, point it directly to the pod using a selector.
+	// The selector shall be unique to this pod.
+	if unprivilegedSameNamespace {
+		service.Spec.Selector = e.selfSelector
+		service.Spec.Ports = []corev1.ServicePort{
+			{
+				Name: "http",
+				// Port that the controller http-01 exposer listens on
+				Port:     e.exposerPort,
+				Protocol: corev1.ProtocolTCP,
+			},
+		}
+		glog.V(4).Info("Using unprivileged traffic redirection for exposing Service %s/%s", e.route.Namespace, service)
+	}
+
 	createdService, err := e.kubeClientset.CoreV1().Services(e.route.Namespace).Create(service)
 	if err != nil {
 		if !kapierrors.IsAlreadyExists(err) {
@@ -123,51 +163,53 @@ func (e *Exposer) Expose(c *acme.Client, domain string, token string) error {
 		BlockOwnerDeletion: &trueVal,
 	}
 
-	/*
-		Endpoints
+	if !unprivilegedSameNamespace {
+		/*
+			Endpoints
 
-		Create endpoints which can point any namespace.
-	*/
-	endpoints := &corev1.Endpoints{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            createdService.Name,
-			OwnerReferences: []metav1.OwnerReference{ownerRefToService},
-		},
-		Subsets: []corev1.EndpointSubset{
-			{
-				Addresses: []corev1.EndpointAddress{
-					{
-						IP: e.exposerIP,
+			Create endpoints which can point any namespace.
+		*/
+		endpoints := &corev1.Endpoints{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            createdService.Name,
+				OwnerReferences: []metav1.OwnerReference{ownerRefToService},
+			},
+			Subsets: []corev1.EndpointSubset{
+				{
+					Addresses: []corev1.EndpointAddress{
+						{
+							IP: e.exposerIP,
+						},
 					},
-				},
-				Ports: []corev1.EndpointPort{
-					{
-						Name: "http",
-						// Port that the controller http-01 exposer listens on
-						Port:     e.exposerPort,
-						Protocol: corev1.ProtocolTCP,
+					Ports: []corev1.EndpointPort{
+						{
+							Name: "http",
+							// Port that the controller http-01 exposer listens on
+							Port:     e.exposerPort,
+							Protocol: corev1.ProtocolTCP,
+						},
 					},
 				},
 			},
-		},
-	}
-	createdEndpoints, err := e.kubeClientset.CoreV1().Endpoints(e.route.Namespace).Create(endpoints)
-	if err != nil {
-		if !kapierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("failed to create exposing Endpoints %s/%s: %v", e.route.Namespace, endpoints.Name, err)
 		}
-
-		glog.Warningf("Forwarding Endpoints %s/%s already exists, forcing rewrite", createdEndpoints.Namespace, createdEndpoints.Name)
-
-		preexistingEndpoints, err := e.kubeClientset.CoreV1().Endpoints(e.route.Namespace).Get(endpoints.Name, metav1.GetOptions{})
+		createdEndpoints, err := e.kubeClientset.CoreV1().Endpoints(e.route.Namespace).Create(endpoints)
 		if err != nil {
-			return fmt.Errorf("failed to get exposing Endpoints %s/%s before updating: %v", e.route.Namespace, endpoints.Name, err)
-		}
+			if !kapierrors.IsAlreadyExists(err) {
+				return fmt.Errorf("failed to create exposing Endpoints %s/%s: %v", e.route.Namespace, endpoints.Name, err)
+			}
 
-		endpoints.ResourceVersion = preexistingEndpoints.ResourceVersion
-		createdEndpoints, err = e.kubeClientset.CoreV1().Endpoints(e.route.Namespace).Update(endpoints)
-		if err != nil {
-			return fmt.Errorf("failed to update exposing Endpoints %s/%s: %v", e.route.Namespace, endpoints.Name, err)
+			glog.Warningf("Forwarding Endpoints %s/%s already exists, forcing rewrite", createdEndpoints.Namespace, createdEndpoints.Name)
+
+			preexistingEndpoints, err := e.kubeClientset.CoreV1().Endpoints(e.route.Namespace).Get(endpoints.Name, metav1.GetOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to get exposing Endpoints %s/%s before updating: %v", e.route.Namespace, endpoints.Name, err)
+			}
+
+			endpoints.ResourceVersion = preexistingEndpoints.ResourceVersion
+			createdEndpoints, err = e.kubeClientset.CoreV1().Endpoints(e.route.Namespace).Update(endpoints)
+			if err != nil {
+				return fmt.Errorf("failed to update exposing Endpoints %s/%s: %v", e.route.Namespace, endpoints.Name, err)
+			}
 		}
 	}
 
@@ -318,17 +360,50 @@ func (e *Exposer) Remove(c *acme.Client, domain string, token string) error {
 	// Name of the forwarding Service and Route
 	exposingName := e.exposingTmpName()
 
-	foregroundPolicy := metav1.DeletePropagationForeground
+	var errs []error
 
-	glog.V(4).Infof("Deleting exposing Service and Route %s/%s.", e.route.Namespace, exposingName)
+	err := func() error {
+		service, err := e.kubeClientset.CoreV1().Services(e.route.Namespace).Get(exposingName, metav1.GetOptions{})
+		if err != nil {
+			if !kapierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to get Service %s/%s before removing: %v", e.route.Namespace, exposingName, err)
+			}
 
-	// We need to delete only the Service as Route has ownerReference to it and will be GC'd.
-	err := e.kubeClientset.CoreV1().Services(e.route.Namespace).Delete(exposingName, &metav1.DeleteOptions{
-		PropagationPolicy: &foregroundPolicy,
-	})
+			glog.Warningf("couldn't remove Service %s/%s because it doesn't exist anymore", e.route.Namespace, exposingName)
+			return nil
+		}
+
+		controllerRef := GetControllerRef(&service.ObjectMeta)
+
+		if controllerRef == nil || controllerRef.UID != e.route.UID {
+			glog.Warningf("won't remove Service %s/%s because Route %s/%s doesn't own it", e.route.Namespace, exposingName, e.route.Namespace, e.route.Name)
+			return nil
+		}
+
+		glog.V(4).Infof("Deleting exposing Service and Route %s/%s.", e.route.Namespace, exposingName)
+		foregroundPolicy := metav1.DeletePropagationForeground
+		preconditions := metav1.Preconditions{
+			UID: &service.UID,
+		}
+		// We need to delete only the Service as Route has ownerReference to it and will be GC'd.
+		err = e.kubeClientset.CoreV1().Services(e.route.Namespace).Delete(exposingName, &metav1.DeleteOptions{
+			PropagationPolicy: &foregroundPolicy,
+			Preconditions:     &preconditions,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to delete exposing Service %s/%s: %v", service.Namespace, service.Name, err)
+		}
+
+		return nil
+	}()
 	if err != nil {
-		return err
+		errs = append(errs, err)
 	}
 
-	return e.underlyingExposer.Remove(c, domain, token)
+	err = e.underlyingExposer.Remove(c, domain, token)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to remove domain and token for Route %s/%s from underlying exposer: %v", e.route.Namespace, e.route.Name, err))
+	}
+
+	return utilerrors.NewAggregate(errs)
 }

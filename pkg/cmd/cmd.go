@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"os"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	kvalidation "k8s.io/apimachinery/pkg/api/validation"
+	"k8s.io/apimachinery/pkg/labels"
 	kvalidationutil "k8s.io/apimachinery/pkg/util/validation"
 	kcoreinformersv1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -45,6 +47,7 @@ const (
 	Flag_Namespace_Key               = "namespace"
 	Flag_AccountName_Key             = "account-name"
 	Flag_DefaultRouteTermination_Key = "default-route-termination"
+	SelfLabels_Path                  = "/dapi/labels"
 	ResyncPeriod                     = 10 * time.Minute
 	Workers                          = 10
 )
@@ -197,6 +200,23 @@ func RunServer(v *viper.Viper, cmd *cobra.Command, out io.Writer) error {
 		}
 	}
 
+	var selfSelector map[string]string
+	_, err = os.Stat(SelfLabels_Path)
+	if err == nil {
+		labelsBytes, err := ioutil.ReadFile(SelfLabels_Path)
+		if err != nil {
+			return fmt.Errorf("failed to read self labels file %q: %v", SelfLabels_Path, err)
+		}
+
+		labelsSet, err := labels.ConvertSelectorToLabelsMap(strings.Replace(strings.Replace(string(labelsBytes), "\n", ",", -1), "\"", "", -1))
+		if err != nil {
+			return fmt.Errorf("failed to parse labels in self labels file %q: %v", SelfLabels_Path, err)
+		}
+
+		selfSelector = map[string]string(labelsSet)
+		glog.Infof("Setup self selector %#v", selfSelector)
+	}
+
 	exposerIP := v.GetString(Flag_ExposerIP)
 	if exposerIP == "" {
 		return fmt.Errorf("%q can't be empty string", Flag_ExposerIP)
@@ -258,7 +278,7 @@ func RunServer(v *viper.Viper, cmd *cobra.Command, out io.Writer) error {
 	secretLister := kcorelistersv1.NewSecretLister(secretInformer.GetIndexer())
 	acmeClientFactory := acmeclientbuilder.NewSharedClientFactory(acmeUrl, accountName, selfNamespace, kubeClientset, secretLister)
 
-	rc := routecontroller.NewRouteController(acmeClientFactory, exposers, routeClientset, kubeClientset, routeInformer, secretInformer, exposerIP, int32(exposerPort), defaultRouteTermination)
+	rc := routecontroller.NewRouteController(acmeClientFactory, exposers, routeClientset, kubeClientset, routeInformer, secretInformer, exposerIP, int32(exposerPort), selfNamespace, selfSelector, defaultRouteTermination)
 	go rc.Run(Workers, stopCh)
 
 	<-stopCh

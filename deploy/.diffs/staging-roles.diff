@@ -2,3 +2,20 @@
 < kind: ClusterRole
 ---
 > kind: Role
+12d11
+<   - routes/finalizers
+28,37d26
+<   - update
+<   - delete
+<   - patch
+< 
+< - apiGroups:
+<   - ""
+<   resources:
+<   - events
+<   verbs:
+<   - create
+42d30
+<   - endpoints
+57d44
+<   - secrets/finalizers

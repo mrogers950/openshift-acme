@@ -42,8 +42,8 @@ test-extended: test-extended-install
 	export TEST_DOMAIN=$(GO_ET_DOMAIN) && \
 	go test $(GOFLAGS) ./test/e2e/openshift -args $(TEST_FLAGS)
 
-.PHONY: checks
-checks: check-gofmt check-goimports check-govet check-deploy-files
+.PHONY: check
+check: check-gofmt check-goimports check-govet check-deploy-files
 
 .PHONY: check-gofmt
 check-gofmt:

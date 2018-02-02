@@ -52,7 +52,7 @@ before_script:
 script:
 - true
 - make test GOFLAGS='-v -race'
-- if [ ${AUTHORITATIVE} ]; then make checks; fi
+- if [ ${AUTHORITATIVE} ]; then make check; fi
 - if [ ${AUTHORITATIVE} ]; then make check-vendor; fi
 - if [ ${AUTHORITATIVE} ]; then make image IMAGE_NAME=openshift-acme-candidate; fi
 - |

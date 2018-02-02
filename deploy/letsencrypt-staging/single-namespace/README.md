@@ -5,14 +5,14 @@ This deployment will provide certificate management only for the namespace it's 
 If you have this repository checked out, deploy it like: 
 
 ```bash
-oc create -fdeploy/{role,serviceaccount,imagestream,deployment}.yaml
+oc create -fdeploy/letsencrypt-staging/single-namespace/{role,serviceaccount,imagestream,deployment}.yaml
 oc policy add-role-to-user openshift-acme --role-namespace="$(oc project --short)" -z openshift-acme
 ```
 
 If you want to deploy it directly from GitHub use:
 
 ```bash
-oc create -fhttps://raw.githubusercontent.com/tnozicka/openshift-acme/master/deploy/letsencrypt-staging/single-namespace/{clusterrole,serviceaccount,imagestream,deployment}.yaml
+oc create -fhttps://raw.githubusercontent.com/tnozicka/openshift-acme/master/deploy/letsencrypt-staging/single-namespace/{role,serviceaccount,imagestream,deployment}.yaml
 oc policy add-role-to-user openshift-acme --role-namespace="$(oc project --short)" -z openshift-acme
 ```
 

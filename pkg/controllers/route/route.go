@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"fmt"
 	"math/rand"
+	"reflect"
 	"time"
 
 	"github.com/golang/glog"
@@ -17,6 +18,9 @@ import (
 	routelistersv1 "github.com/openshift/client-go/route/listers/route/v1"
 	"golang.org/x/crypto/acme"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	kapierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -78,8 +82,10 @@ type RouteController struct {
 
 	queue workqueue.RateLimitingInterface
 
-	exposerIP   string
-	exposerPort int32
+	exposerIP     string
+	exposerPort   int32
+	selfNamespace string
+	selfSelector  map[string]string
 
 	defaultRouteTermination routev1.InsecureEdgeTerminationPolicyType
 }
@@ -93,6 +99,8 @@ func NewRouteController(
 	secretInformer cache.SharedIndexInformer,
 	exposerIP string,
 	exposerPort int32,
+	selfNamespace string,
+	selfSelector map[string]string,
 	defaultRouteTermination routev1.InsecureEdgeTerminationPolicyType,
 ) *RouteController {
 
@@ -123,8 +131,10 @@ func NewRouteController(
 
 		queue: workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
 
-		exposerIP:   exposerIP,
-		exposerPort: exposerPort,
+		exposerIP:     exposerIP,
+		exposerPort:   exposerPort,
+		selfNamespace: selfNamespace,
+		selfSelector:  selfSelector,
 
 		defaultRouteTermination: defaultRouteTermination,
 	}
@@ -287,7 +297,7 @@ func (rc *RouteController) wrapExposers(exposers map[string]challengeexposers.In
 
 	for k, v := range exposers {
 		if k == "http-01" {
-			wrapped[k] = NewExposer(v, rc.routeClientset, rc.kubeClientset, rc.recorder, rc.exposerIP, rc.exposerPort, route)
+			wrapped[k] = NewExposer(v, rc.routeClientset, rc.kubeClientset, rc.recorder, rc.exposerIP, rc.exposerPort, rc.selfNamespace, rc.selfSelector, route)
 		} else {
 			wrapped[k] = v
 		}
@@ -512,7 +522,107 @@ func (rc *RouteController) handle(key string) error {
 		return fmt.Errorf("failed to determine state for Route: %#v", routeReadOnly)
 	}
 
-	// TODO: reconcile (e.g. related secrets)
+	err = rc.syncSecret(routeReadOnly)
+	if err != nil {
+		return fmt.Errorf("failed to sync secret for Route: %#v", routeReadOnly)
+	}
+
+	return nil
+}
+
+func (rc *RouteController) syncSecret(routeReadOnly *routev1.Route) error {
+	// TODO: consider option of choosing a oldSecret name using an annotation
+	secretName := routeReadOnly.Name
+
+	secretExists := true
+	oldSecret, err := rc.secretLister.Secrets(routeReadOnly.Namespace).Get(secretName)
+	if err != nil {
+		if !kapierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to get Secret %s/%s: %v", routeReadOnly.Namespace, secretName, err)
+		}
+		secretExists = false
+	}
+
+	// We need to make sure we can modify this oldSecret (has our controllerRef)
+	if secretExists {
+		controllerRef := GetControllerRef(&oldSecret.ObjectMeta)
+		if controllerRef == nil || controllerRef.UID != routeReadOnly.UID {
+			rc.recorder.Eventf(routeReadOnly, corev1.EventTypeWarning, "CollidingSecret", "Can't sync certificates for Route %s/%s into Secret %s/%s because it already exists and isn't owned by the Route!", routeReadOnly.Namespace, routeReadOnly.Name, routeReadOnly.Namespace, secretName)
+			return nil
+		}
+	}
+
+	if routeReadOnly.Spec.TLS == nil {
+		if !secretExists {
+			return nil
+		}
+
+		var gracePeriod int64 = 0
+		propagationPolicy := metav1.DeletePropagationBackground
+		preconditions := metav1.Preconditions{
+			UID: &oldSecret.UID,
+		}
+		err := rc.kubeClientset.CoreV1().Secrets(routeReadOnly.Namespace).Delete(secretName, &metav1.DeleteOptions{
+			GracePeriodSeconds: &gracePeriod,
+			PropagationPolicy:  &propagationPolicy,
+			Preconditions:      &preconditions,
+		})
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete oldSecret %s/%s: %s", routeReadOnly.Namespace, secretName, err)
+			}
+		}
+
+		return nil
+	}
+
+	// Route has TLS; we need to sync it into a Secret
+	var newSecret *corev1.Secret
+	if secretExists {
+		newSecret = oldSecret.DeepCopy()
+	} else {
+		newSecret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: secretName,
+			},
+		}
+	}
+
+	trueVal := true
+	newSecret.ObjectMeta.OwnerReferences = []metav1.OwnerReference{
+		{
+			APIVersion:         routev1.SchemeGroupVersion.String(),
+			Kind:               "Route",
+			Name:               routeReadOnly.Name,
+			UID:                routeReadOnly.UID,
+			Controller:         &trueVal,
+			BlockOwnerDeletion: &trueVal,
+		},
+	}
+
+	newSecret.Type = corev1.SecretTypeTLS
+
+	if newSecret.Data == nil {
+		newSecret.Data = make(map[string][]byte)
+	}
+	newSecret.Data[corev1.TLSCertKey] = []byte(routeReadOnly.Spec.TLS.Certificate)
+	newSecret.Data[corev1.TLSPrivateKeyKey] = []byte(routeReadOnly.Spec.TLS.Key)
+
+	if !secretExists {
+		_, err = rc.kubeClientset.CoreV1().Secrets(routeReadOnly.Namespace).Create(newSecret)
+		if err != nil {
+			return fmt.Errorf("failed to create Secret %s/%s with TLS data", routeReadOnly.Namespace, newSecret.Name)
+		}
+
+		return nil
+	}
+
+	if !reflect.DeepEqual(oldSecret, newSecret) {
+		_, err = rc.kubeClientset.CoreV1().Secrets(routeReadOnly.Namespace).Update(newSecret)
+		if err != nil {
+			return fmt.Errorf("failed to update Secret %s/%s with TLS data", routeReadOnly.Namespace, newSecret.Name)
+		}
+	}
 
 	return nil
 }

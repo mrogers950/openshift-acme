@@ -33,20 +33,29 @@ function setupClusterWide() {
 }
 
 function setupSingleNamespace() {
+    oc login -u developer -p developer
     oc create -fdeploy/letsencrypt-staging/single-namespace/{role,serviceaccount,deployment}.yaml
     oc policy add-role-to-user openshift-acme --role-namespace="$(oc project --short)" -z openshift-acme
     export FIXED_NAMESPACE=$(oc project --short)
+    oc login -u system:admin
+
+    # hack; needs bug fix https://github.com/openshift/origin/pull/18312
+    # adds update permissions for custom-host
+    oc patch role openshift-acme --type=json -p='[{"op": "add", "path": "/rules/1/verbs/1", "value": "update"}]'
 }
 
 function failureTrap() {
     oc get nodes
     oc get all -n default
     oc get all
+    oc describe deploy/openshift-acme
     oc get routes,svc --all-namespaces
     oc get events
     docker images
     oc get po -o yaml
     oc logs deploy/openshift-acme
+
+    docker logs origin
 
     sleep 3
 }
@@ -94,9 +103,11 @@ for binary in ${binaries}; do
         ${setup}
         oc set env -e OPENSHIFT_ACME_DEFAULT_ROUTE_TERMINATION=Allow deploy/openshift-acme
         # clean up and let it start again
-        timeout 1m oc delete rs -l app=openshift-acme --grace-period=0 --force
+        timeout 1m oc delete rs -l app=openshift-acme --grace-period=0 --force || true
 
         oc get all
+        oc patch deploy openshift-acme -p='{"metadata":{"annotations":{"timestamp":"'$(date +%s%N)'"}}}'
+        sleep 1
         oc rollout status deploy/openshift-acme
         oc get all
 
