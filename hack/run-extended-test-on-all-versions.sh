@@ -72,7 +72,8 @@ for binary in ${binaries}; do
     echo binary version: ${version}
     ln -sfn ${binary} ${bindir}/oc
     oc version || true
-    for setup in {setupClusterWide,setupSingleNamespace}; do
+#    for setup in {setupClusterWide,setupSingleNamespace}; do
+    for setup in setupSingleNamespace; do
         echo ${setup}
         oc cluster up --version=${version} --server-loglevel=4
         oc version
@@ -110,7 +111,7 @@ for binary in ${binaries}; do
         oc rollout resume deploy/openshift-acme
         sleep 10
         oc get deploy/openshift-acme -o yaml
-        oc rollout status deploy/openshift-acme
+        timeout 1m oc rollout status deploy/openshift-acme
         oc get all
 
         make -j64 test-extended GOFLAGS="-v -race" GO_ET_KUBECONFIG=~/.kube/config GO_ET_DOMAIN=${DOMAIN} || (oc logs deploy/openshift-acme; false)
