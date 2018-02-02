@@ -27,6 +27,7 @@ echo binaries: ${binaries}
 make -j64 test-extended-install GOFLAGS='-v -race'
 
 function setupClusterWide() {
+    sed '/^spec:/a \ \ paused: true' -i deploy/letsencrypt-staging/cluster-wide/deployment.yaml
     oc create -fdeploy/letsencrypt-staging/cluster-wide/{clusterrole,serviceaccount,deployment}.yaml
     oc adm policy add-cluster-role-to-user openshift-acme -z openshift-acme
     export FIXED_NAMESPACE=""
@@ -34,6 +35,7 @@ function setupClusterWide() {
 
 function setupSingleNamespace() {
     oc login -u developer -p developer
+    sed '/^spec:/a \ \ paused: true' -i deploy/letsencrypt-staging/single-namespace/deployment.yaml
     oc create -fdeploy/letsencrypt-staging/single-namespace/{role,serviceaccount,deployment}.yaml
     oc policy add-role-to-user openshift-acme --role-namespace="$(oc project --short)" -z openshift-acme
     export FIXED_NAMESPACE=$(oc project --short)
@@ -53,7 +55,7 @@ function failureTrap() {
     oc get events
     docker images
     oc get po -o yaml
-    oc logs deploy/openshift-acme
+    oc logs deploy/openshift-acme || true
 
     docker logs origin
 
@@ -64,6 +66,8 @@ trap failureTrap ERR
 trap "sleep 3" EXIT
 
 for binary in ${binaries}; do
+    docker rm -f $(docker ps -aq) || true
+
     version=${binary#$pathPrefix}
     echo binary version: ${version}
     ln -sfn ${binary} ${bindir}/oc
@@ -102,12 +106,10 @@ for binary in ${binaries}; do
 
         ${setup}
         oc set env -e OPENSHIFT_ACME_DEFAULT_ROUTE_TERMINATION=Allow deploy/openshift-acme
-        # clean up and let it start again
-        timeout 1m oc delete rs -l app=openshift-acme --grace-period=0 --force || true
 
-        oc get all
-        oc patch deploy openshift-acme -p='{"metadata":{"annotations":{"timestamp":"'$(date +%s%N)'"}}}'
-        sleep 1
+        oc rollout resume deploy/openshift-acme
+        sleep 10
+        oc get deploy/openshift-acme -o yaml
         oc rollout status deploy/openshift-acme
         oc get all
 
